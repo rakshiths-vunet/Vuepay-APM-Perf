@@ -1,0 +1,34 @@
+server:
+  base_url: "https://home-blr-001.vunetsystems.com:8443"
+  tls_skip_verify: true
+
+auth:
+  phone_number: "7795012759"
+  password: "password"
+  otp: "999999"
+  token_ttl_minutes: 7
+
+user:
+  phone_number: "7795012759"
+  user_id: "User"
+  account_no: "ACC1000000002"
+
+payment:
+  amount: 123
+  beneficiary_name: "Ganesh"
+  beneficiary_account: "ACC1000000001"
+
+producer:
+  target_tps: 6000
+  worker_count: 500
+  journey_weights:
+    account: 1
+    payment_initiate: 1
+    bills: 1
+  http_timeout_ms: 5000
+  stats_interval_seconds: 1
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
