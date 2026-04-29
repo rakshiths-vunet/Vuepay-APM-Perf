@@ -47,6 +47,23 @@ func NewTokenManager(cfg *config.Config, client *http.Client, logger *zap.Logger
 
 func (tm *TokenManager) Start(ctx context.Context) error {
 	if err := tm.doRefresh(ctx); err != nil {
+		// Retry with backoff on initial auth failure
+		backoff := 500 * time.Millisecond
+		for i := 0; i < 10; i++ {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(backoff):
+			}
+			if err := tm.doRefresh(ctx); err == nil {
+				go tm.startRefreshLoop(ctx)
+				return nil
+			}
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
 		return err
 	}
 	go tm.startRefreshLoop(ctx)
@@ -91,7 +108,7 @@ func (tm *TokenManager) refreshWithRetry(ctx context.Context) {
 	}
 
 	backoff := 500 * time.Millisecond
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		select {
 		case <-ctx.Done():
 			return
@@ -103,6 +120,9 @@ func (tm *TokenManager) refreshWithRetry(ctx context.Context) {
 			tm.logger.Warn("token refresh retry failed", zap.Int("attempt", i+1), zap.Error(err))
 		}
 		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
 	}
 }
 
@@ -130,7 +150,7 @@ func (tm *TokenManager) login(ctx context.Context) (string, error) {
 		"password":     tm.cfg.Auth.Password,
 	}
 	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(tm.cfg.Server.BaseURL, "/") + "/vuepay/gateway/auth/login"
+	endpoint := strings.TrimRight(tm.cfg.Server.BaseURL, "/") + "/vuepay/gateway-v4/auth/login"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -165,7 +185,7 @@ func (tm *TokenManager) verifyOTP(ctx context.Context, transactionID string) (st
 		"otp":            tm.cfg.Auth.OTP,
 	}
 	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(tm.cfg.Server.BaseURL, "/") + "/vuepay/gateway/auth/verify-otp"
+	endpoint := strings.TrimRight(tm.cfg.Server.BaseURL, "/") + "/vuepay/gateway-v4/auth/verify-otp"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

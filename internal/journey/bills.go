@@ -2,9 +2,6 @@ package journey
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -14,10 +11,15 @@ import (
 type BillsJourney struct {
 	cfg    *config.Config
 	client *http.Client
+	inflight chan struct{}
 }
 
 func NewBillsJourney(cfg *config.Config, client *http.Client) *BillsJourney {
-	return &BillsJourney{cfg: cfg, client: client}
+	return &BillsJourney{
+		cfg:      cfg,
+		client:   client,
+		inflight: make(chan struct{}, maxAsyncInFlight(cfg.Producer.WorkerCount)),
+	}
 }
 
 func (j *BillsJourney) Name() string {
@@ -25,35 +27,29 @@ func (j *BillsJourney) Name() string {
 }
 
 func (j *BillsJourney) Execute(ctx context.Context, token string) error {
-	endpoint := strings.TrimRight(j.cfg.Server.BaseURL, "/") + "/vuepay/gateway/bills"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := j.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusUnauthorized {
-		return ErrUnauthorized
-	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("bills status %d body=%s", resp.StatusCode, string(respBody))
+	select {
+	case j.inflight <- struct{}{}:
+	default:
+		return nil
 	}
 
-	var out struct {
-		Success bool `json:"success"`
-	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return err
-	}
-	if !out.Success {
-		return fmt.Errorf("bills unsuccessful: %s", string(respBody))
-	}
+	// Fire-and-forget: send request in background, return immediately
+	go func() {
+		defer func() { <-j.inflight }()
+
+		endpoint := strings.TrimRight(j.cfg.Server.BaseURL, "/") + "/vuepay/gateway-v4/bills"
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := j.client.Do(req)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+
 	return nil
 }

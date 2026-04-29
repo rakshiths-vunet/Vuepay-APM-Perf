@@ -14,6 +14,7 @@ type Config struct {
 	User     UserConfig     `yaml:"user"`
 	Payment  PaymentConfig  `yaml:"payment"`
 	Producer ProducerConfig `yaml:"producer"`
+	Webhook  WebhookConfig  `yaml:"webhook"`
 	Logging  LoggingConfig  `yaml:"logging"`
 }
 
@@ -55,6 +56,13 @@ type LoggingConfig struct {
 	Output string `yaml:"output"`
 }
 
+type WebhookConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	ListenAddr string `yaml:"listen_addr"`
+	Secret    string `yaml:"secret"`
+	AutoStart bool   `yaml:"auto_start"`
+}
+
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -67,12 +75,30 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyEnvOverrides(&cfg)
-	normalize(&cfg)
-	if err := validate(&cfg); err != nil {
+	if err := Prepare(&cfg); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+func Prepare(cfg *Config) error {
+	normalize(cfg)
+	return validate(cfg)
+}
+
+func Clone(cfg *Config) *Config {
+	if cfg == nil {
+		return nil
+	}
+	copyCfg := *cfg
+	if cfg.Producer.JourneyWeights != nil {
+		copyCfg.Producer.JourneyWeights = make(map[string]int, len(cfg.Producer.JourneyWeights))
+		for key, value := range cfg.Producer.JourneyWeights {
+			copyCfg.Producer.JourneyWeights[key] = value
+		}
+	}
+	return &copyCfg
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -89,6 +115,8 @@ func applyEnvOverrides(cfg *Config) {
 		"VUEPAY_LOGGING_LEVEL":               &cfg.Logging.Level,
 		"VUEPAY_LOGGING_FORMAT":              &cfg.Logging.Format,
 		"VUEPAY_LOGGING_OUTPUT":              &cfg.Logging.Output,
+		"VUEPAY_WEBHOOK_LISTEN_ADDR":         &cfg.Webhook.ListenAddr,
+		"VUEPAY_WEBHOOK_SECRET":              &cfg.Webhook.Secret,
 	}
 	for key, ptr := range overrides {
 		if v := os.Getenv(key); v != "" {
@@ -118,6 +146,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VUEPAY_SERVER_TLS_SKIP_VERIFY"); v != "" {
 		cfg.Server.TLSSkipVerify = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v := os.Getenv("VUEPAY_WEBHOOK_ENABLED"); v != "" {
+		cfg.Webhook.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("VUEPAY_WEBHOOK_AUTO_START"); v != "" {
+		cfg.Webhook.AutoStart = strings.EqualFold(v, "true") || v == "1"
+	}
 }
 
 func normalize(cfg *Config) {
@@ -135,6 +169,9 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Logging.Output == "" {
 		cfg.Logging.Output = "stdout"
+	}
+	if cfg.Webhook.ListenAddr == "" {
+		cfg.Webhook.ListenAddr = ":8090"
 	}
 }
 
@@ -191,6 +228,9 @@ func validate(cfg *Config) error {
 		if w <= 0 {
 			return fmt.Errorf("producer.journey_weights.%s must be > 0", journeyName)
 		}
+	}
+	if cfg.Webhook.ListenAddr == "" {
+		return fmt.Errorf("webhook.listen_addr is required")
 	}
 	return nil
 }

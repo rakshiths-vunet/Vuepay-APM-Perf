@@ -29,7 +29,7 @@ The authentication is a **two-step process**. Both steps must be completed befor
 ### Step 1 — Login (get `transaction_id`)
 
 ```
-POST /vuepay/gateway/auth/login
+POST /vuepay/gateway-v4/auth/login
 Content-Type: application/json
 
 {
@@ -50,7 +50,7 @@ Content-Type: application/json
 ### Step 2 — OTP Verify (get `access_token`)
 
 ```
-POST /vuepay/gateway/auth/verify-otp
+POST /vuepay/gateway-v4/auth/verify-otp
 Content-Type: application/json
 
 {
@@ -85,7 +85,7 @@ All three journeys share the same bearer token. Static fields (phone, account nu
 ### Journey 1 — Account Details
 
 ```
-POST /vuepay/gateway/account
+POST /vuepay/gateway-v4/account
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -105,7 +105,7 @@ Content-Type: application/json
 ### Journey 2 — Payment Initiate
 
 ```
-POST /vuepay/gateway/payment/initiate
+POST /vuepay/gateway-v4/payment/initiate
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -132,7 +132,7 @@ Content-Type: application/json
 ### Journey 3 — Bills Fetch
 
 ```
-GET /vuepay/gateway/bills
+GET /vuepay/gateway-v4/bills
 Authorization: Bearer <token>
 ```
 

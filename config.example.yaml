@@ -28,6 +28,12 @@ producer:
   http_timeout_ms: 5000
   stats_interval_seconds: 1
 
+webhook:
+  enabled: true
+  listen_addr: ":8090"
+  secret: ""
+  auto_start: true
+
 logging:
   level: "info"
   format: "json"

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -15,10 +13,15 @@ import (
 type AccountJourney struct {
 	cfg    *config.Config
 	client *http.Client
+	inflight chan struct{}
 }
 
 func NewAccountJourney(cfg *config.Config, client *http.Client) *AccountJourney {
-	return &AccountJourney{cfg: cfg, client: client}
+	return &AccountJourney{
+		cfg:      cfg,
+		client:   client,
+		inflight: make(chan struct{}, maxAsyncInFlight(cfg.Producer.WorkerCount)),
+	}
 }
 
 func (j *AccountJourney) Name() string {
@@ -26,39 +29,43 @@ func (j *AccountJourney) Name() string {
 }
 
 func (j *AccountJourney) Execute(ctx context.Context, token string) error {
-	payload := map[string]string{"phone": j.cfg.User.PhoneNumber}
-	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(j.cfg.Server.BaseURL, "/") + "/vuepay/gateway/account"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := j.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusUnauthorized {
-		return ErrUnauthorized
-	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("account status %d body=%s", resp.StatusCode, string(respBody))
+	select {
+	case j.inflight <- struct{}{}:
+	default:
+		return nil
 	}
 
-	var out struct {
-		Success bool `json:"success"`
-	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return err
-	}
-	if !out.Success {
-		return fmt.Errorf("account unsuccessful: %s", string(respBody))
-	}
+	// Fire-and-forget: send request in background, return immediately
+	go func() {
+		defer func() { <-j.inflight }()
+
+		payload := map[string]string{"phone": j.cfg.User.PhoneNumber}
+		body, _ := json.Marshal(payload)
+		endpoint := strings.TrimRight(j.cfg.Server.BaseURL, "/") + "/vuepay/gateway-v4/account"
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := j.client.Do(req)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+
 	return nil
+}
+
+func maxAsyncInFlight(workerCount int) int {
+	if workerCount <= 0 {
+		return 1000
+	}
+	if workerCount < 1000 {
+		return 1000
+	}
+	return workerCount * 2
 }

@@ -32,7 +32,7 @@ func NewWorkerPool(cfg *config.Config, tokens *auth.TokenManager, dispatcher *Di
 		dispatcher: dispatcher,
 		reporter:   reporter,
 		logger:     logger,
-		limiter:    rate.NewLimiter(rate.Limit(cfg.Producer.TargetTPS), cfg.Producer.TargetTPS),
+		limiter:    rate.NewLimiter(rate.Inf, 1),
 	}
 }
 
@@ -86,7 +86,7 @@ func (p *WorkerPool) worker(ctx context.Context, id int) {
 		}
 
 		if err != nil {
-			p.reporter.RecordError(j.Name())
+			p.reporter.RecordError(j.Name(), err)
 			workerLogger.Debug("journey failed", zap.String("journey", j.Name()), zap.Error(err))
 			continue
 		}

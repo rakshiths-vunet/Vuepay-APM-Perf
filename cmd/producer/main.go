@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,11 +12,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/your-org/vuepay-producer/internal/auth"
 	"github.com/your-org/vuepay-producer/internal/config"
-	"github.com/your-org/vuepay-producer/internal/journey"
-	"github.com/your-org/vuepay-producer/internal/producer"
-	"github.com/your-org/vuepay-producer/internal/stats"
+	"github.com/your-org/vuepay-producer/internal/control"
 )
 
 func main() {
@@ -39,65 +33,32 @@ func main() {
 	}
 	defer cleanup()
 
-	httpClient := newHTTPClient(cfg)
-	tokenManager := auth.NewTokenManager(cfg, httpClient, logger)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	defer cancel()
+	controller := control.NewController(ctx, cfg, logger)
 
-	if err := tokenManager.Start(ctx); err != nil {
-		logger.Fatal("initial auth failed", zap.Error(err))
+	var webhookServer *control.WebhookServer
+	if cfg.Webhook.Enabled {
+		webhookServer = control.NewWebhookServer(cfg, *configPath, controller, logger)
+		webhookServer.Start()
 	}
 
-	journeys := []journey.Journey{
-		journey.NewAccountJourney(cfg, httpClient),
-		journey.NewPaymentJourney(cfg, httpClient),
-		journey.NewBillsJourney(cfg, httpClient),
+	if !cfg.Webhook.Enabled || cfg.Webhook.AutoStart {
+		if err := controller.Start(); err != nil {
+			logger.Fatal("failed to start producer", zap.Error(err))
+		}
 	}
-
-	dispatcher, err := producer.NewDispatcher(journeys, cfg.Producer.JourneyWeights)
-	if err != nil {
-		logger.Fatal("failed to initialize dispatcher", zap.Error(err))
-	}
-
-	reporter := stats.NewReporter([]string{"account", "payment_initiate", "bills"}, time.Duration(cfg.Producer.StatsIntervalSeconds)*time.Second)
-	reporter.Start(ctx)
-
-	pool := producer.NewWorkerPool(cfg, tokenManager, dispatcher, reporter, logger)
-	pool.Start(ctx)
-
-	logger.Info("producer started",
-		zap.Int("workers", cfg.Producer.WorkerCount),
-		zap.Int("target_tps", cfg.Producer.TargetTPS),
-	)
 
 	<-ctx.Done()
+	controller.Stop()
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
+	if webhookServer != nil {
+		webhookServer.Shutdown(shutdownCtx)
+	}
 
 	logger.Info("shutting down")
-	pool.Wait(shutdownCtx)
-}
-
-func newHTTPClient(cfg *config.Config) *http.Client {
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          1000,
-		MaxIdleConnsPerHost:   1000,
-		MaxConnsPerHost:       1000,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: cfg.Server.TLSSkipVerify},
-		DisableKeepAlives:     false,
-	}
-
-	return &http.Client{
-		Transport: transport,
-		Timeout:   time.Duration(cfg.Producer.HTTPTimeoutMs) * time.Millisecond,
-	}
 }
 
 func buildLogger(cfg *config.Config) (*zap.Logger, func(), error) {
@@ -141,3 +102,4 @@ func buildLogger(cfg *config.Config) (*zap.Logger, func(), error) {
 	core := zapcore.NewCore(encoder, ws, level)
 	return zap.New(core), cleanup, nil
 }
+
